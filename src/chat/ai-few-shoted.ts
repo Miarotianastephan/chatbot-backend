@@ -21,14 +21,14 @@ export class OllamaService implements OnModuleInit {
     // Prompt système pour inférer mood (ajoutez en propriété de classe ou constante)
     private moodInferencePrompt = `
     Infer the user's mood from this message. Choose from: playful, seductive, submissive, dominant, bratty, needy, aggressive, romantic, curious, shy.
-    Output ONLY the mood name (e.g., "submissive"). No explanation.
+    OUTPUT IMMEDIATLY THE MOOD NAME like "submissive". NO explanation.
     Message: {{message}}
     `;
 
     // Prompt système pour inférer category
     private categoryInferencePrompt = `
     Infer the category from this message. Choose from: soft-seductive, flirty-tease, classic-naughty, very-explicit, hardcore.
-    Output ONLY the category name (e.g., "hardcore"). No explanation.
+    OUTPUT IMMEDIATLY THE CATEGORY NAME "hardcore". NO explanation.
     Message: {{message}}
     `;
 
@@ -60,8 +60,13 @@ export class OllamaService implements OnModuleInit {
         const startTime = performance.now();
 
         try {
-            const inferredMood = this.inferMood(message);
-            const inferredCategory = this.inferCategory(message);
+            // Inference with AI, "TEST-PURPOSE FIRST"
+            // Simultaneous NOT sequential
+            const [inferredMood, inferredCategory] = await Promise.all([
+                this.inferViaAI(message, this.moodInferencePrompt, 'playful'),
+                this.inferViaAI(message, this.categoryInferencePrompt, 'classic-naughty')
+            ]);
+            this.logger.debug(`[INFERED MOOD]: ${inferredMood}, [INFERED CATEGORY]: ${inferredCategory}`);
             const examples = this.filterExamples(inferredMood, inferredCategory, 5);
 
             if(examples.length < 3) {
@@ -75,7 +80,7 @@ export class OllamaService implements OnModuleInit {
             dynamicPrompt += `User: ${message}\nAssistant:`;
 
             // logger the constructed prompt for debugging
-            this.logger.debug(`Constructed Prompt: ${dynamicPrompt}`);  
+            this.logger.debug(`[PROMPT] Constructed Prompt: ${dynamicPrompt}`);  
 
             const messages = [
                 ...history.map(h => ({
@@ -108,13 +113,16 @@ export class OllamaService implements OnModuleInit {
             }
             
             const data = await response.json();
+
             const endtTime = performance.now();
             const latency = endtTime - startTime;
-            // Mesure CPU/RAM après réponse (plus représentatif de la charge réelle)
+
+            // CPU/RAM usage tracking
             osUtils.cpuUsage((cpuPercent) => {
                 const ramPercent = (1 - osUtils.freememPercentage()) * 100;
                 this.logger.log(`[PERF] Latency: ${latency.toFixed(2)} ms | CPU: ${cpuPercent.toFixed(1)}% | RAM: ${ramPercent.toFixed(1)}%`);
             });
+
             return data.message?.content.trim() || 'I\'m unable to make your desire for now. Maybe later ?!';
         }catch (error) {
             const endtTime = performance.now();
@@ -151,5 +159,39 @@ export class OllamaService implements OnModuleInit {
         .slice(0, count);
     }
 
-    
+    private async inferViaAI(message: string, promptTemplate: string, defaultValue: string): Promise<string> {
+        try {
+            const prompt = promptTemplate.replace('{{message}}', message);
+
+            const response = await fetch(`${this.ollamaUrl}/api/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: 'my-adult-chatbot',
+                    prompt: prompt,
+                    stream: false,
+                    options: { temperature: 0.5, num_predict: 20 }
+                })
+            });
+
+            if (!response.ok) {
+                this.logger.warn('AI inference failed, using default');
+                return defaultValue;
+            }
+
+            const data = await response.json();
+            const inferred = data.response.trim();
+            
+            // Validation simple (si valeur invalide, fallback)
+            if (inferred.length < 3 || inferred.length > 20) {  // Mood/category typiquement courts
+                this.logger.warn(`Invalid AI inference: ${inferred}, using default`);
+                return defaultValue;
+            }
+
+            return inferred;
+        } catch (error) {
+            this.logger.error('AI inference error', error);
+            return defaultValue;
+        }
+    }
 }
